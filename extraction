@@ -1,0 +1,319 @@
+import os
+import pandas as pd
+from tkinter import Tk, filedialog, Label, Button, Text, Scrollbar, END, messagebox, ttk, StringVar, Checkbutton, \
+    IntVar, Frame, Menu  # Added Menu
+import openpyxl
+from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl.styles import Font
+import tempfile
+from tkinter import font as tkfont
+
+
+class RobustExcelExtractor:
+    def __init__(self, master):
+        self.master = master
+        master.title("Extracteur Excel Robust")
+        master.geometry("1200x800")
+        master.minsize(1000, 600)
+
+        # Variables
+        self.selected_files = []
+        self.data = {}
+        self.sums = {}
+        self.include_header = IntVar(value=1)
+        self.include_index = IntVar(value=0)
+        self.search_term = StringVar()
+
+        # Style
+        self.style = ttk.Style()
+        self.style.theme_use('clam')
+        self.style.configure('TButton', padding=6)
+        self.style.configure('TLabelFrame', padding=10)
+        self.style.configure('TCheckbutton', padding=5)
+        self.style.configure('Accent.TButton', background='#4CAF50', foreground='white')
+        self.style.map('Accent.TButton', background=[('active', '#45a049')])
+
+        # Interface
+        self.create_widgets()
+
+    def create_widgets(self):
+        # Conteneur principal
+        main_frame = ttk.Frame(self.master)
+        main_frame.pack(padx=10, pady=10, fill="both", expand=True)
+
+        # Frame supérieur
+        top_frame = ttk.Frame(main_frame)
+        top_frame.pack(fill="x", pady=5)
+
+        # Sélection des fichiers
+        select_frame = ttk.LabelFrame(top_frame, text="Sélection des fichiers")
+        select_frame.pack(side="left", fill="x", expand=True, padx=5)
+
+        ttk.Button(select_frame, text="Parcourir", command=self.select_files, style="Accent.TButton").pack(pady=10)
+
+        # Recherche
+        search_frame = ttk.LabelFrame(top_frame, text="Options de recherche")
+        search_frame.pack(side="right", fill="x", expand=True, padx=5)
+
+        ttk.Label(search_frame, text="Rechercher :").pack(side="left", padx=5)
+        ttk.Entry(search_frame, textvariable=self.search_term, width=30).pack(side="left", padx=5)
+
+        # Options
+        option_frame = ttk.LabelFrame(main_frame, text="Options")
+        option_frame.pack(fill="x", pady=5)
+
+        ttk.Checkbutton(option_frame, text="Inclure en-têtes", variable=self.include_header).pack(side="left", padx=10)
+        ttk.Checkbutton(option_frame, text="Inclure index", variable=self.include_index).pack(side="left", padx=10)
+
+        # Feuilles
+        self.sheet_frame = ttk.LabelFrame(main_frame, text="Feuilles disponibles")
+        self.sheet_frame.pack(fill="x", pady=5)
+
+        # Barre de progression
+        self.progress = ttk.Progressbar(main_frame, mode='indeterminate')
+
+        # Boutons
+        btn_frame = ttk.Frame(main_frame)
+        btn_frame.pack(pady=10)
+
+        ttk.Button(btn_frame, text="Extraire", command=self.extract_data, style="Accent.TButton").pack(side="left",
+                                                                                                       padx=5)
+        ttk.Button(btn_frame, text="Ouvrir dans Excel", command=self.open_in_excel).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Calculer Sommes", command=self.calculate_sums).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Effacer", command=self.clear_results).pack(side="left", padx=5)
+
+        # Notebook pour résultats
+        self.notebook = ttk.Notebook(main_frame)
+        self.notebook.pack(fill="both", expand=True, pady=5)
+
+        # Onglet Données
+        data_frame = ttk.Frame(self.notebook)
+        self.notebook.add(data_frame, text="Données Extraites")
+
+        self.data_text = Text(data_frame, wrap="none", font=('Consolas', 10), height=20)
+        vsb_data = Scrollbar(data_frame, orient="vertical", command=self.data_text.yview)
+        hsb_data = Scrollbar(data_frame, orient="horizontal", command=self.data_text.xview)
+        self.data_text.configure(yscrollcommand=vsb_data.set, xscrollcommand=hsb_data.set)
+
+        vsb_data.pack(side="right", fill="y")
+        hsb_data.pack(side="bottom", fill="x")
+        self.data_text.pack(side="left", fill="both", expand=True)
+
+        # Onglet Sommes
+        sums_frame = ttk.Frame(self.notebook)
+        self.notebook.add(sums_frame, text="Sommes")
+
+        self.sums_text = Text(sums_frame, wrap="none", font=('Consolas', 10), height=20)
+        vsb_sums = Scrollbar(sums_frame, orient="vertical", command=self.sums_text.yview)
+        hsb_sums = Scrollbar(sums_frame, orient="horizontal", command=self.sums_text.xview)
+        self.sums_text.configure(yscrollcommand=vsb_sums.set, xscrollcommand=hsb_sums.set)
+
+        vsb_sums.pack(side="right", fill="y")
+        hsb_sums.pack(side="bottom", fill="x")
+        self.sums_text.pack(side="left", fill="both", expand=True)
+
+        # Menu contextuel
+        self.context_menu = Menu(self.master, tearoff=0)  # Changed ttk.Menu to Menu
+        self.context_menu.add_command(label="Copier", command=self.copy_text)
+        self.data_text.bind("<Button-3>", self.show_context_menu)
+        self.sums_text.bind("<Button-3>", self.show_context_menu)
+
+    def show_context_menu(self, event):
+        self.context_menu.post(event.x_root, event.y_root)
+
+    def copy_text(self):
+        try:
+            selected_text = self.data_text.selection_get() or self.sums_text.selection_get()
+            self.master.clipboard_clear()
+            self.master.clipboard_append(selected_text)
+        except:
+            pass
+
+    def select_files(self):
+        files = filedialog.askopenfilenames(
+            title="Sélectionnez les fichiers Excel",
+            filetypes=[("Fichiers Excel", "*.xlsx *.xls"), ("Tous fichiers", "*.*")]
+        )
+        if files:
+            self.selected_files = files
+            self.update_sheet_list()
+
+    def update_sheet_list(self):
+        for widget in self.sheet_frame.winfo_children():
+            widget.destroy()
+
+        self.sheet_vars = {}
+
+        for file in self.selected_files:
+            try:
+                xls = pd.ExcelFile(file)
+                file_name = os.path.basename(file)
+
+                frame = ttk.Frame(self.sheet_frame)
+                frame.pack(fill="x", padx=5, pady=2)
+
+                ttk.Label(frame, text=f"{file_name}:").pack(side="left")
+
+                for sheet in xls.sheet_names:
+                    var = IntVar(value=1)
+                    self.sheet_vars[(file, sheet)] = var
+                    Checkbutton(frame, text=sheet, variable=var).pack(side="left", padx=2)
+
+            except Exception as e:
+                messagebox.showerror("Erreur", f"Erreur lecture {os.path.basename(file)}:\n{str(e)}")
+
+    def extract_data(self):
+        if not self.selected_files:
+            messagebox.showwarning("Attention", "Aucun fichier sélectionné")
+            return
+
+        self.clear_results()
+        term = self.search_term.get().strip().lower()
+
+        self.progress.pack(fill="x", pady=5)
+        self.progress.start()
+
+        for file in self.selected_files:
+            try:
+                xls = pd.ExcelFile(file)
+                file_data = {}
+
+                for sheet in xls.sheet_names:
+                    if self.sheet_vars.get((file, sheet), IntVar(value=0)).get():
+                        df = pd.read_excel(file, sheet_name=sheet)
+
+                        if term:
+                            try:
+                                mask = df.astype(str).apply(lambda x: x.str.lower().str.contains(term, na=False)).any(
+                                    axis=1)
+                                df = df[mask]
+                                if df.empty:
+                                    continue
+                            except Exception as e:
+                                self.data_text.insert(END,
+                                                      f"\n[ERREUR] Recherche {os.path.basename(file)}-{sheet}:\n{str(e)}\n")
+                                continue
+
+                        file_data[sheet] = df
+
+                if file_data:
+                    self.data[file] = file_data
+                    self.display_file(file)
+
+            except Exception as e:
+                self.data_text.insert(END, f"\n[ERREUR] {os.path.basename(file)}:\n{str(e)}\n")
+
+        self.progress.stop()
+        self.progress.pack_forget()
+
+        if not self.data:
+            self.data_text.insert(END, "\nAucune donnée trouvée")
+
+    def calculate_sums(self):
+        if not self.data:
+            messagebox.showwarning("Attention", "Aucune donnée à sommer")
+            return
+
+        self.sums = {}
+        self.sums_text.delete(1.0, END)
+
+        self.progress.pack(fill="x", pady=5)
+        self.progress.start()
+
+        for file, sheets in self.data.items():
+            file_name = os.path.basename(file)
+            self.sums[file_name] = {}
+
+            for sheet_name, df in sheets.items():
+                numeric_cols = df.select_dtypes(include=['int64', 'float64'])
+                if not numeric_cols.empty:
+                    col_sums = numeric_cols.sum()
+                    self.sums[file_name][sheet_name] = col_sums
+
+        self.sums_text.insert(END, "\n=== SOMMES DES VALEURS NUMÉRIQUES ===\n")
+        for file_name, sheets in self.sums.items():
+            self.sums_text.insert(END, f"\nFichier: {file_name}\n")
+            for sheet_name, sums in sheets.items():
+                self.sums_text.insert(END, f"\nFeuille: {sheet_name}\n")
+                for col, sum_val in sums.items():
+                    self.sums_text.insert(END, f"Colonne '{col}': {sum_val}\n")
+                self.sums_text.insert(END, "-" * 50 + "\n")
+
+        if not self.sums:
+            self.sums_text.insert(END, "\nAucune donnée numérique trouvée")
+
+        self.progress.stop()
+        self.progress.pack_forget()
+        self.notebook.select(1)
+
+    def display_file(self, file):
+        file_name = os.path.basename(file)
+        self.data_text.insert(END, f"\n\n=== {file_name} ===\n")
+        for sheet, df in self.data[file].items():
+            self.data_text.insert(END, f"\n--- {sheet} ---\n")
+            content = df.to_string(
+                index=bool(self.include_index.get()),
+                header=bool(self.include_header.get()),
+                max_rows=30,
+                max_cols=15
+            )
+            self.data_text.insert(END, content + "\n")
+
+    def open_in_excel(self):
+        if not self.data:
+            messagebox.showwarning("Attention", "Aucune donnée à exporter")
+            return
+
+        try:
+            wb = openpyxl.Workbook()
+            wb.remove(wb.active)
+
+            for file, sheets in self.data.items():
+                file_name = os.path.basename(file)
+
+                for sheet_name, df in sheets.items():
+                    safe_name = f"{file_name[:20]}_{sheet_name[:20]}".replace(":", "").replace("\\", "").replace("/",
+                                                                                                                 "")
+                    ws = wb.create_sheet(title=safe_name[:31])
+
+                    ws.append([f"Fichier: {file_name}"])
+                    ws.append([f"Feuille: {sheet_name}"])
+                    ws.append([])
+
+                    for cell in ws[1]:
+                        cell.font = Font(bold=True)
+
+                    for row in dataframe_to_rows(df, index=bool(self.include_index.get()),
+                                                 header=bool(self.include_header.get())):
+                        ws.append(row)
+
+                    for column in ws.columns:
+                        max_length = max(len(str(cell.value)) for cell in column)
+                        adjusted_width = min(max_length + 2, 50)
+                        ws.column_dimensions[column[0].column_letter].width = adjusted_width
+
+            temp_dir = tempfile.gettempdir()
+            output_file = os.path.join(temp_dir, "extraction_excel.xlsx")
+
+            if os.path.exists(output_file):
+                os.remove(output_file)
+
+            wb.save(output_file)
+            os.startfile(output_file)
+
+        except PermissionError:
+            messagebox.showerror("Erreur", "Impossible d'écrire le fichier. Fermez Excel et réessayez.")
+        except Exception as e:
+            messagebox.showerror("Erreur", f"Erreur Excel:\n{str(e)}")
+
+    def clear_results(self):
+        self.data_text.delete(1.0, END)
+        self.sums_text.delete(1.0, END)
+        self.data = {}
+        self.sums = {}
+
+
+if __name__ == "__main__":
+    root = Tk()
+    app = RobustExcelExtractor(root)
+    root.mainloop()
